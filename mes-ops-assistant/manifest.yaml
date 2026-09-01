@@ -1,0 +1,19 @@
+# MES 运维助手技能 - 发布清单（manifest）
+# 发布到 SkillHub 前请按实际情况填写/核对：name、version、description、category、author、tags
+name: MES 运维助手
+slug: mes-ops-assistant
+version: 1.0.0
+description: >-
+  MES 制造执行系统运维技能。可执行系统健康巡检、日志分析、故障排查、构建部署、
+  数据库迁移脚本编写、Windows 客户端（设备联机/打印代理/运维工具）部署升级，
+  覆盖 mes-api / mes-admin / mes-app / mes-device-link / mes-print-agent / mes-ops 模块，
+  以及多客户环境（prod/dev/test/xichi/xinzhiwei/shenzhen）的运维问题处理。
+category: devops
+tags:
+  - mes
+  - 运维
+  - 巡检
+  - 排障
+  - 部署
+  - 数据库迁移
+author: Jeff
