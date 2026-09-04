@@ -40,12 +40,18 @@ agent_created: true
 │   ├─ 涉及前端页面     → 查 console 报错 + 对应 API 日志
 │   └─ 涉及 Windows 客户端 → 查客户端 logs/error-*.log（见「Windows 客户端」）
 ├─ 构建 / 发布
-│   └─ 按「构建与部署」执行，注意环境模式
+│   ├─ 涉及现场 Windows 整机部署（deploy.ps1 场景）
+│   │   └─ 先跑 scripts/check_deploy_prereqs.ps1 做前置检查（见「部署前置检查」），
+│   │      缺项必须先问用户是否要装，禁止未经确认直接安装
+│   └─ 其余按「构建与部署」执行，注意环境模式
 ├─ 数据库变更
 │   ├─ 生产环境        → 一律走 Flyway 风格迁移脚本（见「数据库迁移」）
 │   └─ 本地调试        → 可直接执行 SQL，但要先确认目标库
 ├─ 查询数据 / 查用户 / 跑 SQL
 │   └─ 用 scripts/db_query.py 执行只读 SQL（连接参数自动读取 mes-api 配置，见「数据库查询」）
+├─ 第三方系统调用 mesnova.cn OpenAPI（查工单/SN/基础档案/字典）
+│   └─ 用 scripts/mesnova_openapi.py 自动签名发请求（见「mesnova.cn OpenAPI 调用」），
+│      注意区分文档旧路径与真实 /openapi/v1/* 路径，注意 /mes-api/ 前缀
 └─ 需求开发 / 文档
     └─ 不属运维范围，按常规开发流程处理
 ```
@@ -96,6 +102,33 @@ java -jar -Dspring.profiles.active=prod target/mes-api.jar   # 环境 profile �
 - 覆盖端口示例：`--server.port=7071`、`--socket.server.port=7071`。
 - 发布前确认：数据库迁移脚本是否已按版本顺序就位（见下节）、配置文件中数据源地址/密钥是否正确、日志目录可写。
 
+### 现场 Windows 整机部署（deploy.ps1）
+
+`mes-api/deploy.ps1` 用于在客户现场 Windows 机器上从零部署一整套环境（JDK 8 + MySQL 8 + Nginx + Spring Boot 应用），布局为 `<部署目录>\{jdk8,mysql,nginx,app,dist}`。**不同客户现场的部署目录不同（不是固定 `D:\mes`）**，以当前 LLM 正在操作的目录（即 deploy.ps1/安装包所在目录）为基准查找。
+
+**识别到用户意图是"部署一下应用"这类现场整机部署时，必须先做前置检查，禁止跳过直接执行 deploy.ps1：**
+
+1. 运行前置检查脚本（只读，不安装、不改动任何东西），`-BaseDir` 默认取当前目录，也可显式指定：
+   ```powershell
+   powershell -File scripts\check_deploy_prereqs.ps1
+   # 或显式指定客户现场的实际部署目录
+   powershell -File scripts\check_deploy_prereqs.ps1 -BaseDir "<当前部署目录>"
+   ```
+2. 脚本会分别检查以下几项，输出 `[OK]` / `[WARN]` / `[MISSING]`：
+   - **JDK 8**：本机 `java -version` 或 `JAVA_HOME` 或部署目录下 `jdk8\bin\java.exe` 是否为 1.8.x；
+   - **MySQL 8**：本机 `mysql --version` 或部署目录下 `mysql\bin\mysqld.exe` 版本是否为 8.x，以及 MySQL 服务是否存在；
+   - **nginx**：
+     - 若部署目录下 `nginx\nginx.exe`（或 PATH 中）已安装：
+       - 先用 `nginx -t` 检查 `conf\nginx.conf` 语法，有误必须先修复才能启动；
+       - 语法通过后再做业务规则检查（本项目 nginx.conf 约定，见下）：
+         1. `location /` 必须有 `try_files ... /index.html` 兜底，否则前端路由刷新会 404；且其 `root`（或变量解析后的路径）指向的目录必须存在；
+         2. `/mes_api/`、`/mes-api/`、`/ws`、`/wpf-ws` 这几个 location 的 `proxy_pass` 端口必须一致，且应与 mes-api 实际监听端口（默认 7070）相符，不一致会导致部分接口/WebSocket 连不上后端；
+         3. `/ws`、`/wpf-ws` 是 WebSocket 代理，必须同时带 `proxy_http_version 1.1`、`proxy_set_header Upgrade $http_upgrade`、`proxy_set_header Connection "Upgrade"`，缺一个都会导致 WebSocket 断连（对应 runbook.md「WebSocket / socket 断连」）；
+         4. `/mes/file/`、`/pdfjs/` 等用 `alias` 指向静态目录的 location，其目录（含通过 `set $var ...;` 定义的变量解析后的实际路径）必须存在；
+     - 若未安装 → 检查部署目录下是否已备好 `nginx-*.zip` 安装包（deploy.ps1 会直接解压这个包）。
+3. **任何一项 `[MISSING]`：停下来向用户报告缺失项，明确询问是否需要现在安装/补齐或修复配置，等用户确认后才能继续**（安装 JDK/MySQL、下载 nginx 包、修复 nginx.conf 等）。禁止在未经用户确认的情况下擅自下载安装包或安装系统级软件、注册服务、修改环境变量、修改 nginx.conf——这类改动影响面大且不易撤销。
+4. 全部 `[OK]` 时才继续执行 `deploy.ps1`（或指导用户执行），并提醒 deploy.ps1 本身会做的事：设置环境变量、初始化数据库、注册 Windows 服务（MySQL / nssm 生成的 MesApp 服务）——这些都是有状态变更的操作，执行前再向用户确认一次目标机器与目录无误。
+
 ## 数据库迁移
 
 **规范（强制）**：所有对生产库的结构变更必须写成迁移脚本，放在 `mes-api/src/main/resources/db/upgrade/` 下，命名 `V<主>_<次>_<修订>__<描述>.sql`，版本号在现有最大版本号上递增（现有最高版本见该目录）。脚本内容需幂等（可重复执行不报错），涉及删列/删菜单等破坏性操作时先查引用并列出受影响对象。
@@ -125,6 +158,42 @@ python3 scripts/db_query.py --profile dev "DESCRIBE t_sys_users"
 - 执行环境要求：本机需有 `mysql` 客户端，或 `python3` 可 `import pymysql`（二选一，缺失时脚本会给出安装提示）。
 - 结果以表格形式返回；涉及敏感字段（password/salt/token）的列默认不展示，除非用户明确要求。
 
+## mesnova.cn OpenAPI 调用（第三方对接接口）
+
+`mes-api` 对外提供了一套 AppKey/AppSecret + HMAC-SHA256 签名鉴权的 OpenAPI（`/openapi/v1/*`），供第三方系统查工单、查/回传 SN 号码段、同步基础档案、查字典等，与内部管理端用的登录鉴权是两套完全独立的机制。
+
+**两个容易踩坑的点（先确认再用）：**
+
+1. **路径**：`mes-api/doc/third-party-basic-data-api.md` 文档里给的示例路径（如 `POST /workOrder/page`、`GET /dict/query`）是旧的登录鉴权路径，**不会**做 AppKey/AppSecret 签名校验；真正走签名校验的是 `OpenApiAuthFilter` 拦截的 `/openapi/` 开头路径，对应 Controller 实际映射在 `/openapi/v1/work-orders`、`/openapi/v1/work-station-sns`、`/openapi/v1/inventories`、`/openapi/v1/work-stations`、`/openapi/v1/dicts` 下（源码见 `mes-api/src/main/java/com/nstextile/mes/openapi/controller/`），具体子路径以各 Controller 的 `@OpenApiScope`/`@PostMapping`/`@GetMapping` 为准。文档示例路径可作为参数字段参考，但请求时要换成 `/openapi/v1/...` 真实路径。
+2. **域名前缀**：生产环境 nginx（`mes-api/nginx.conf`）把后端挂在 `/mes-api/` 前缀下，直接请求 `https://mesnova.cn/openapi/v1/...`（不带 `/mes-api` 前缀）会被前端 SPA 的 `try_files ... /index.html` 兜底路由吞掉，返回 200 的 HTML 页面而不是报错，看起来像"通了"但根本没到后端。真实可用地址是 `https://mesnova.cn/mes-api/openapi/v1/...`。
+
+**签名机制**：请求需带 `X-App-Key` / `X-Timestamp`（毫秒）/ `X-Nonce`（一次性，10 分钟内不可重复）/ `X-Signature` 四个头；签名 = `Base64(HMAC-SHA256(secret, "METHOD\nPATH含query\nTIMESTAMP\nNONCE\nBODY"))`，时间戳允许误差 5 分钟。若 401/403，按提示检查：OpenAPI 应用是否已启用、AppSecret 是否正确、IP 白名单、接口所需 scope 是否已配置。
+
+**用脚本调用，不要手动拼签名**：`scripts/mesnova_openapi.py` 自动完成签名和发请求，命令行只需给 method/path/参数：
+
+```bash
+# 配置凭据（向 MES 管理员申请，勿写入仓库/日志）
+export MES_OPENAPI_APP_KEY=xxx
+export MES_OPENAPI_APP_SECRET=xxx
+
+# 查字典（工站类型 codeType=001）
+python3 scripts/mesnova_openapi.py GET /openapi/v1/dicts/query --query codeType=001
+
+# 分页查工单
+python3 scripts/mesnova_openapi.py POST /openapi/v1/work-orders/page --body '{"pageNum":1,"pageSize":100}'
+
+# 按工单号查 SN 号码段
+python3 scripts/mesnova_openapi.py GET /openapi/v1/work-station-sns/getInfoByWorkOrderNo --query workOrderNo=WO-20260610001
+
+# 回传 SN 状态
+python3 scripts/mesnova_openapi.py POST /openapi/v1/work-station-sns/updateStatus \
+  --body '{"workOrderNo":"WO-20260610001","sn":"SN202606100001","status":"PASS","statusUpdateTime":"2026-07-06 10:30:00"}'
+```
+
+- 凭据优先级：CLI 参数（`--app-key`/`--app-secret`/`--base-url`）> 环境变量（`MES_OPENAPI_APP_KEY`/`MES_OPENAPI_APP_SECRET`/`MES_OPENAPI_BASE_URL`）> 默认值（Base URL 默认 `https://mesnova.cn/mes-api`）。
+- AppSecret 是敏感凭据：只用于本地签名计算，禁止写入代码/配置文件/日志；不确定客户是否已申请 OpenAPI 应用时先向用户确认。
+- 该 OpenAPI 面向第三方系统对接场景；本仓库内部运维查数据仍优先用 `scripts/db_query.py`（直连数据库只读查询），不要为了图方便绕开鉴权走 OpenAPI。
+
 ## Windows 客户端（mes-device-link / mes-print-agent / mes-ops）
 
 三个均为 .NET 4.7.2 WinForms 客户端，部署到车间 Windows 机器（支持 Win7+）：
@@ -140,11 +209,15 @@ python3 scripts/db_query.py --profile dev "DESCRIBE t_sys_users"
 - 生产环境禁止未经确认执行 `DELETE` / `DROP` / `TRUNCATE` / `UPDATE`（不带 WHERE）等破坏性语句。
 - 不改动他人正在使用的配置文件与数据；排查优先只读。
 - `.workbuddy` 目录存放项目数据与记忆，禁止删除。
+- 现场整机部署（JDK/MySQL/nginx 安装、注册系统服务、改环境变量等）影响面大，前置检查发现缺失时必须先问用户是否要装，禁止 LLM 自行下载/安装/改动系统级软件。
+- mesnova.cn OpenAPI 的 AppSecret 视为敏感凭据：只放环境变量，禁止写入仓库文件、日志、对话记录之外的持久化位置。
 
 ## Resources
 
 - `scripts/health_check.sh` — 只读巡检脚本：检查端口监听、进程、磁盘、最近错误日志摘要，直接 `bash scripts/health_check.sh` 运行。
 - `scripts/db_query.py` — 数据库只读查询脚本：自动读取 mes-api 配置连接 MySQL，执行 SELECT/SHOW 等查询（见「数据库查询」）。
+- `scripts/check_deploy_prereqs.ps1` — 现场 Windows 部署前置检查脚本（只读）：检查 JDK 8 / MySQL 8 / nginx 安装包是否齐备（见「现场 Windows 整机部署」）。
+- `scripts/mesnova_openapi.py` — mesnova.cn OpenAPI 通用签名客户端：自动完成 AppKey/AppSecret 的 HMAC-SHA256 签名并发请求，用于第三方接口查工单/SN/基础档案/字典（见「mesnova.cn OpenAPI 调用」）。
 - `references/system-map.md` — 模块、端口、配置文件、环境 profile、日志路径、客户端行为速查表。
 - `references/runbook.md` — 常见故障对照表（现象 → 排查 → 处理）。
 - `references/db-guide.md` — 数据库迁移规范细则与常用运维 SQL。
