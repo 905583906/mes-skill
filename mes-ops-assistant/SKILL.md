@@ -36,6 +36,16 @@ agent_created: true
 - 系统内部用到的客户/环境代号（如 `dev`/`test`/`prod`/`shenzhen`/`xichi`/`xinzhiwei` 等，详见 `references/system-map.md`）是工程内部识别用的，**不对现场人员提及**，这些代号本身也不能透露给对方；
 - 若被问到"系统是不是别的地方也在用"，只需回应类似"系统是按各自环境独立部署运行的，这个不太方便透露"，不做展开。
 
+## 执行前先确定目标环境/工作空间（强制）
+
+**任何涉及"操作项目代码/服务"或"部署"的任务**（构建、部署、重启服务、跑数据库迁移/查询、调用 `mes_tool.bat`/`deploy.ps1`、改配置等）——**动手前必须先明确本次操作的目标环境，不能凭默认值或上一次的记忆直接执行**：
+
+1. **在哪台机器上**：当前会话是在本地开发机（macOS，本仓库路径 `/Users/wangj_outsourcing/project/mes`）执行，还是在某个客户现场的 Windows 机器上执行。这决定了能不能直接调用 `mes_tool.bat`、`deploy.ps1` 这类现场脚本（见「现场部署后的日常运维（mes_tool.bat）」执行纪律第 1 条：不在现场机器上时只能指导用户自己运行，不能代为执行）。
+2. **是哪个客户/环境**：涉及现场机器或需要指定 profile 时，必须明确是 `prod` / `dev` / `test` / `shenzhen` / `xichi` / `xinzhiwei` 中的哪一个（见 `references/system-map.md`「环境 profile 速查」）。不同环境的配置、部署目录、数据库连接彼此独立，认错环境会导致在错误的地方操作（比如把现场数据库当成本地库跑迁移）。
+3. **具体路径/连接目标以什么为准**：现场部署目录因客户而异，不是固定路径，以当前实际操作（或被要求操作）的目录为基准，而不是想象或沿用其它现场的路径（deploy.ps1 场景默认取当前目录，可用 `-BaseDir` 显式指定）；数据库查询脚本 `db_query.py` 的 `--profile` 参数无默认值、必须显式指定，禁止省略参数或凭假设默认某个环境（尤其不能默认当成 prod）。
+
+以上任一项不明确或存在歧义时，**先向用户问清楚，禁止凭猜测选一个环境（包括默认选 prod）就直接执行有副作用的操作**（部署、更新、备份、写库等）。只读的巡检/诊断操作可以先按当前上下文（如当前所在目录）继续，但结论里要说明本次巡检针对的是哪个环境，避免用户误以为看到的是另一套环境的状态。
+
 ## 系统架构速览
 
 仓库根目录 `/Users/wangj_outsourcing/project/mes`，各模块职责与关键技术栈：
@@ -55,7 +65,7 @@ agent_created: true
 
 ## 运维工作流决策树
 
-收到运维请求后按此树路由：
+收到运维请求后按此树路由。**若请求属于「操作项目/部署」类（构建、部署、跑迁移/查询、调用现场脚本等），先按上一节「执行前先确定目标环境/工作空间」确认好机器与环境，再进入下面对应分支**：
 
 ```
 运维请求
@@ -228,18 +238,18 @@ java -jar -Dspring.profiles.active=prod target/mes-api.jar   # 环境 profile �
 
 ## 数据库查询
 
-**原则：默认只读。** 查数据、查用户、验证表结构统一用 `scripts/db_query.py`，连接参数自动从 `mes-api/src/main/resources/application-<profile>.yml` 解析（默认 prod，可用 `--profile dev|prod|shenzhen` 切换，也可用环境变量 `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS` 覆盖）。
+**原则：默认只读。** 查数据、查用户、验证表结构统一用 `scripts/db_query.py`，连接参数自动从 `mes-api/src/main/resources/application-<profile>.yml` 解析。**`--profile` 参数无默认值，必须每次显式指定**（`dev`/`prod`/`shenzhen` 等，见「执行前先确定目标环境/工作空间」），也可用环境变量 `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS` 覆盖连接参数——不确定该连哪个环境时先问用户，禁止凡默认当作 prod 或沿用上一次用过的环境。
 
 ```bash
-# 查所有未删除的用户（核心场景）
-python3 scripts/db_query.py "SELECT id, username, account, phone, status, user_type, is_builtin, create_time FROM t_sys_users WHERE delete_flag = '0' ORDER BY id"
+# 查所有未删除的用户（核心场景，profile 按确认后的目标环境填写）
+python3 scripts/db_query.py --profile dev "SELECT id, username, account, phone, status, user_type, is_builtin, create_time FROM t_sys_users WHERE delete_flag = '0' ORDER BY id"
 
 # 联角色名查看用户
-python3 scripts/db_query.py "SELECT u.id, u.username, u.account, r.role_name, u.status FROM t_sys_users u LEFT JOIN t_sys_roles r ON u.role_id = r.id WHERE u.delete_flag = '0' AND r.delete_flag = '0' ORDER BY u.id"
+python3 scripts/db_query.py --profile dev "SELECT u.id, u.username, u.account, r.role_name, u.status FROM t_sys_users u LEFT JOIN t_sys_roles r ON u.role_id = r.id WHERE u.delete_flag = '0' AND r.delete_flag = '0' ORDER BY u.id"
 
 # 其他只读语句同样支持
-python3 scripts/db_query.py "SHOW TABLES"
-python3 scripts/db_query.py --profile dev "DESCRIBE t_sys_users"
+python3 scripts/db_query.py --profile dev "SHOW TABLES"
+python3 scripts/db_query.py --profile shenzhen "DESCRIBE t_sys_users"
 ```
 
 - 脚本默认拦截非只读语句（仅放行 SELECT/SHOW/DESC/EXPLAIN/WITH），写操作需人工确认后加 `--force`，运维场景仍应优先走迁移脚本（见「数据库迁移」）。

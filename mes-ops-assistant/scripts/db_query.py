@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """MES 数据库查询脚本（默认只读，禁止破坏性语句）
 
-自动从 mes-api 的 application-<profile>.yml 读取连接参数（默认 prod），
+自动从 mes-api 的 application-<profile>.yml 读取连接参数。
+--profile 必须显式指定（无默认值，避免误连生产环境），
 优先使用 mysql CLI 执行，本机没有 mysql 时回退 pymysql。
 
 用法示例:
-  db_query.py "SELECT * FROM t_sys_users WHERE delete_flag = 0"
-  db_query.py --profile dev "SHOW TABLES"
-  echo "SELECT COUNT(*) FROM t_sys_users" | db_query.py
-  db_query.py --force "UPDATE ..."      # 危险，仅确认需要时使用
+  db_query.py --profile dev "SELECT * FROM t_sys_users WHERE delete_flag = 0"
+  db_query.py --profile shenzhen "SHOW TABLES"
+  echo "SELECT COUNT(*) FROM t_sys_users" | db_query.py --profile prod
+  db_query.py --profile prod --force "UPDATE ..."      # 危险，仅确认需要时使用
 
 连接参数优先级: 环境变量 > yml 配置。
 环境变量: DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASS
@@ -147,7 +148,7 @@ def run_via_pymysql(conn: dict, sql: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="MES 数据库只读查询（连接参数自动读取 mes-api 配置）")
     parser.add_argument("sql", nargs="?", help="SQL 语句；缺省时从 stdin 读取，'-' 表示 stdin")
-    parser.add_argument("--profile", default="prod", help="环境 profile，默认 prod（dev/prod/shenzhen）")
+    parser.add_argument("--profile", required=True, help="环境 profile，必须显式指定（dev/prod/shenzhen 等），无默认值")
     parser.add_argument("--api-dir", help="mes-api 源码 resources 目录或仓库根；默认自动向上查找")
     parser.add_argument("--force", action="store_true", help="放行非只读语句（危险，谨慎使用）")
     args = parser.parse_args()
